@@ -93,43 +93,55 @@
       if (!event.isPrimary || event.button !== 0) return;
       suppressClickUntil = 0;
       clearTimeout(idleTimer);
-      gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, started: performance.now(), moved: false };
+      gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false, samples: [] };
       event.target.setPointerCapture(event.pointerId);
     });
 
+    // The page follows the finger. In this RTL menu the next page sits on the left,
+    // so dragging right pulls the next page in and dragging left goes back.
     menu.addEventListener('pointermove', event => {
       if (gesture?.id !== event.pointerId) return;
       const dx = event.clientX - gesture.x;
       const dy = event.clientY - gesture.y;
-      if (!gesture.moved && (Math.abs(dx) < 9 || Math.abs(dx) <= Math.abs(dy))) return;
-      gesture.moved = true;
-      if (!track.classList.contains('dragging')) {
+      if (!gesture.moved) {
+        if (Math.abs(dx) < 9 || Math.abs(dx) <= Math.abs(dy)) return;
+        gesture.moved = true;
+        gesture.x = event.clientX; // start from here so the page doesn't jump
         const transform = new DOMMatrixReadOnly(getComputedStyle(track).transform);
-        gesture.grabOffset = transform.m41 - page * menu.getBoundingClientRect().width;
+        gesture.grabOffset = transform.m41 - page * menu.clientWidth;
+        track.classList.add('dragging');
       }
-      track.classList.add('dragging');
+      const moveX = event.clientX - gesture.x;
+      gesture.samples.push({ x: event.clientX, t: performance.now() });
+      if (gesture.samples.length > 6) gesture.samples.shift();
       const width = menu.clientWidth;
-      const atEdge = (page === 0 && dx > 0) || (page === slides.length - 1 && dx < 0);
-      // A leftward gesture selects the page positioned on the left of the RTL strip.
-      const offset = Math.max(-width, Math.min(width, -dx)) * (atEdge ? .15 : 1);
-      gesture.offset = offset + gesture.grabOffset;
-      display(gesture.offset);
+      let offset = Math.max(-width, Math.min(width, moveX + gesture.grabOffset));
+      const atEdge = (page === 0 && offset < 0) || (page === slides.length - 1 && offset > 0);
+      if (atEdge) offset *= .15;
+      gesture.offset = offset;
+      display(offset);
     });
 
     function endGesture(event) {
       if (gesture?.id !== event.pointerId) return;
-      const dx = event.clientX - gesture.x;
-      const dy = event.clientY - gesture.y;
-      const flick = Math.abs(dx) > 30 && Math.abs(dx) / Math.max(1, performance.now() - gesture.started) > .4;
-      const travel = Math.min(115, Math.max(45, menu.clientWidth * .085));
-      const swipe = event.type === 'pointerup' && gesture.moved && Math.abs(dx) > Math.abs(dy) && (Math.abs(dx) > travel || flick);
-      if (gesture.moved) suppressClickUntil = performance.now() + 300;
-      const step = swipe ? (dx < 0 ? 1 : -1) : 0;
-      const target = Math.max(0, Math.min(slides.length - 1, page + step));
-      const remaining = Math.abs((target - page) * menu.clientWidth - (gesture.offset || 0));
-      const duration = Math.round(270 + 180 * Math.min(1, remaining / menu.clientWidth));
+      const g = gesture;
       gesture = undefined;
       track.classList.remove('dragging');
+      if (!g.moved) return;
+      suppressClickUntil = performance.now() + 300;
+      const width = menu.clientWidth;
+      const offset = g.offset || 0;
+      // Speed over the last moments of the drag, in px per ms (positive = moving right).
+      const s = g.samples.filter(p => performance.now() - p.t < 120);
+      const v = s.length > 1 ? (s[s.length - 1].x - s[0].x) / Math.max(1, s[s.length - 1].t - s[0].t) : 0;
+      let step = 0;
+      if (event.type === 'pointerup') {
+        if (Math.abs(v) > .35) step = v > 0 ? 1 : -1;                // quick flick
+        else if (Math.abs(offset) > width * .25) step = offset > 0 ? 1 : -1; // dragged far enough
+      }
+      const target = Math.max(0, Math.min(slides.length - 1, page + step));
+      const remaining = Math.abs((target - page) * width - offset);
+      const duration = Math.round(220 + 200 * Math.min(1, remaining / width));
       show(target, duration);
     }
 
